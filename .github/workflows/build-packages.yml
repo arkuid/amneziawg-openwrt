@@ -15,10 +15,6 @@ on:
         description: "YAAWG release tag, branch or commit hash to build"
         type: string
         required: true
-      openwrt_arch:
-        description: "OpenWrt package architecture"
-        type: string
-        required: true
       openwrt_target:
         description: "OpenWrt target"
         type: string
@@ -35,7 +31,7 @@ on:
 
 jobs:
   build:
-    name: "${{ inputs.openwrt_target }}/${{ inputs.openwrt_subtarget }} (${{ inputs.openwrt_arch }})"
+    name: "${{ inputs.openwrt_target }}/${{ inputs.openwrt_subtarget }}"
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -110,10 +106,29 @@ jobs:
         run: |
           set -e -x
           mkdir awgrelease
+
+          # The package architecture cannot be reliably derived from the target
+          # name — bcm53xx/generic for instance builds arm_cortex-a9 and not
+          # arm_cortex-a9_vfpv3-d16 — so it is taken from what the SDK actually
+          # produced.
+          pkg_dir="$(find openwrt/bin/packages -mindepth 2 -maxdepth 2 -type d -name awgopenwrt -print -quit)"
+          if [ -z "$pkg_dir" ]; then
+            echo "No AmneziaWG packages were built below openwrt/bin/packages."
+            exit 1
+          fi
+          arch="$(basename "$(dirname "$pkg_dir")")"
+          echo "OPENWRT_ARCH=$arch" >> "$GITHUB_ENV"
+
+          find "$pkg_dir" \
+            -maxdepth 1 -type f \( -name '*.ipk' -o -name '*.apk' \) -exec cp {} awgrelease \;
           find "openwrt/bin/targets/${{ inputs.openwrt_target }}/${{ inputs.openwrt_subtarget }}/packages" \
             -maxdepth 1 -type f -name 'kmod-amneziawg*' -exec cp {} awgrelease \;
-          find "openwrt/bin/packages/${{ inputs.openwrt_arch }}/awgopenwrt" \
-            -maxdepth 1 -type f \( -name '*.ipk' -o -name '*.apk' \) -exec cp {} awgrelease \;
+
+          # `find' stays silent when it matches nothing, so make sure that every
+          # package really made it into the artifact.
+          for pkg in kmod-amneziawg amneziawg-go amneziawg-tools luci-proto-amneziawg; do
+            ls awgrelease | grep -q "^${pkg}[-_]" || { echo "Package ${pkg} is missing."; exit 1; }
+          done
 
           # The kernel module can only be installed on a firmware whose kernel
           # reports the very same vermagic, which matters for SNAPSHOT builds.
@@ -122,14 +137,14 @@ jobs:
             echo "YAAWG version: ${{ inputs.amneziawg_version }}"
             echo "OpenWrt version: ${{ inputs.openwrt_version }}"
             echo "Target: ${{ inputs.openwrt_target }}/${{ inputs.openwrt_subtarget }}"
-            echo "Architecture: ${{ inputs.openwrt_arch }}"
+            echo "Architecture: $arch"
             echo "Built at: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
             echo "Vermagic: $([ -n "$vermagic" ] && cat "$vermagic" || echo 'unknown')"
           } > awgrelease/build-info.txt
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
-          name: ${{ inputs.artifact_prefix }}-${{ inputs.openwrt_target }}-${{ inputs.openwrt_subtarget }}-${{ inputs.openwrt_arch }}
+          name: ${{ inputs.artifact_prefix }}-${{ inputs.openwrt_target }}-${{ inputs.openwrt_subtarget }}-${{ env.OPENWRT_ARCH }}
           path: awgrelease/*
           if-no-files-found: error

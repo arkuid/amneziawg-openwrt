@@ -68,8 +68,8 @@ jobs:
           requested="${{ inputs.openwrt_version || 'latest' }}"
           if [ "$requested" = "latest" ]; then
             requested=$(curl -fsS https://downloads.openwrt.org/releases/ \
-              | grep -oE '>[0-9]+\.[0-9]+\.[0-9]+/<' \
-              | tr -d '></' \
+              | grep -oE 'href="[0-9]+\.[0-9]+\.[0-9]+/"' \
+              | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' \
               | sort -V \
               | tail -n1)
           fi
@@ -100,7 +100,6 @@ jobs:
     with:
       openwrt_version: ${{ needs.prepare.outputs.openwrt_version }}
       amneziawg_version: ${{ needs.prepare.outputs.amneziawg_version }}
-      openwrt_arch: ${{ matrix.target.arch }}
       openwrt_target: ${{ matrix.target.target }}
       openwrt_subtarget: ${{ matrix.target.subtarget }}
       artifact_prefix: amneziawg
@@ -112,7 +111,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           path: artifacts
 
