@@ -143,7 +143,7 @@ jobs:
           } > awgrelease/build-info.txt
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.artifact_prefix }}-${{ inputs.openwrt_target }}-${{ inputs.openwrt_subtarget }}-${{ env.OPENWRT_ARCH }}
           path: awgrelease/*
