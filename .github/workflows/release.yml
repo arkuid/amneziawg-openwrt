@@ -1,0 +1,171 @@
+name: Release - Build AmneziaWG for the latest OpenWrt release
+
+# Builds the whole package set for every architecture listed in
+# .github/targets.json against a stable OpenWrt release and attaches the result
+# to a GitHub release.
+#
+# Pushing a `vX.Y.Z' tag creates a draft release holding the freshly built
+# packages, so that the changelog can be written before it becomes public.
+# Running the workflow by hand against an already existing release only adds
+# the new archives to it, which is how an unchanged YAAWG version is rebuilt
+# for a newly published OpenWrt release.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      amneziawg_version:
+        description: "YAAWG release tag, branch or commit hash to build"
+        type: string
+        required: true
+        default: "master"
+      openwrt_version:
+        description: "OpenWrt release to build against, or `latest`"
+        type: string
+        required: true
+        default: "latest"
+      publish:
+        description: "Attach the packages to the release named after the built version"
+        type: boolean
+        required: true
+        default: false
+      draft:
+        description: "Create the release as a draft, if it does not exist yet"
+        type: boolean
+        required: true
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    name: Resolve build parameters
+    runs-on: ubuntu-24.04
+    outputs:
+      targets: ${{ steps.params.outputs.targets }}
+      openwrt_version: ${{ steps.params.outputs.openwrt_version }}
+      amneziawg_version: ${{ steps.params.outputs.amneziawg_version }}
+      publish: ${{ steps.params.outputs.publish }}
+      draft: ${{ steps.params.outputs.draft }}
+    steps:
+      - name: Checkout YAAWG repository
+        uses: actions/checkout@v5
+
+      - name: Resolve parameters
+        id: params
+        run: |
+          set -e -o pipefail
+
+          echo "targets=$(jq -c . .github/targets.json)" >> "$GITHUB_OUTPUT"
+
+          requested="${{ inputs.openwrt_version || 'latest' }}"
+          if [ "$requested" = "latest" ]; then
+            requested=$(curl -fsS https://downloads.openwrt.org/releases/ \
+              | grep -oE '>[0-9]+\.[0-9]+\.[0-9]+/<' \
+              | tr -d '></' \
+              | sort -V \
+              | tail -n1)
+          fi
+          if [ -z "$requested" ]; then
+            echo "Unable to determine the latest OpenWrt release."
+            exit 1
+          fi
+          echo "openwrt_version=$requested" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "amneziawg_version=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "draft=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "amneziawg_version=${{ inputs.amneziawg_version }}" >> "$GITHUB_OUTPUT"
+            echo "publish=${{ inputs.publish }}" >> "$GITHUB_OUTPUT"
+            echo "draft=${{ inputs.draft }}" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.prepare.outputs.targets) }}
+    uses: ./.github/workflows/build-packages.yml
+    with:
+      openwrt_version: ${{ needs.prepare.outputs.openwrt_version }}
+      amneziawg_version: ${{ needs.prepare.outputs.amneziawg_version }}
+      openwrt_arch: ${{ matrix.target.arch }}
+      openwrt_target: ${{ matrix.target.target }}
+      openwrt_subtarget: ${{ matrix.target.subtarget }}
+      artifact_prefix: amneziawg
+
+  publish:
+    name: Publish release
+    needs: [ prepare, build ]
+    if: ${{ needs.prepare.outputs.publish == 'true' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Pack artifacts
+        run: |
+          set -e -x
+          mkdir dist
+          for dir in artifacts/*/; do
+            name=$(basename "$dir")
+            tar -czf "dist/${name}-openwrt-${{ needs.prepare.outputs.openwrt_version }}.tar.gz" -C "$dir" .
+          done
+
+      - name: Attach packages to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.amneziawg_version }}
+          OPENWRT_VERSION: ${{ needs.prepare.outputs.openwrt_version }}
+          DRAFT: ${{ needs.prepare.outputs.draft }}
+        run: |
+          set -e
+
+          # An existing release just receives the new archives, so that a
+          # release can be rebuilt for another OpenWrt version without touching
+          # its changelog. Their file names carry the OpenWrt version, hence
+          # builds for different OpenWrt versions live side by side.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Adding the OpenWrt $OPENWRT_VERSION packages to the existing release $TAG."
+            gh release upload "$TAG" dist/* --clobber
+            exit 0
+          fi
+
+          if ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Refusing to create a release for '$TAG', which is not a tag."
+            echo "Tag the commit first, or re-run with an existing release tag."
+            exit 1
+          fi
+
+          # GitHub composes the `What's Changed' list for us, the boilerplate
+          # below is prepended to it.
+          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="$TAG" --jq .body > generated-notes.md || true
+
+          {
+            printf 'Packages built against OpenWrt %s.\n\n' "$OPENWRT_VERSION"
+            printf 'Every archive contains `kmod-amneziawg`, `amneziawg-go`, `amneziawg-tools`,\n'
+            printf '`luci-proto-amneziawg` and the localization package for one target. Pick the\n'
+            printf 'archive matching your `Target Platform` and package architecture, see the\n'
+            printf 'README for installation instructions.\n\n'
+            cat generated-notes.md
+          } > notes.md
+
+          echo "Creating release $TAG with the OpenWrt $OPENWRT_VERSION packages."
+          gh release create "$TAG" dist/* \
+            --title "YAAWG $TAG" \
+            --notes-file notes.md \
+            $([ "$DRAFT" = "true" ] && echo --draft)

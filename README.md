@@ -3,19 +3,19 @@
 ## FAQ & TL;DR
 
 **Q: Where can I get the binaries?**  
-A: [Check here](#how-to-use-the-new-workflow).
+A: Prebuilt packages for the most popular architectures are published on the [releases page](../../releases): a versioned release for the latest stable OpenWRT version and a daily refreshed `snapshot` pre-release for `SNAPSHOT`. If your architecture is not covered, [build it yourself](#how-to-use-the-new-workflow).
 
 **Q: What is the latest supported version of the protocol?**  
-A: YAAWG fully supports AmneziaWG v2.0, including S3-S4, I1-I5 and ranged H1-H4 parameters.
+A: YAAWG fully supports AmneziaWG v3.0, including header protection, content padding and the customizable timings, on top of everything v2.0 offers (S3-S4, I1-I5 and ranged H1-H4 parameters). See the [protocol parameters](#protocol-parameters) section.
 
 **Q: Should I use the kernel module or the Go implementation?**  
 A: Use the kernel module by default. If it doesn't work for you, switch to the Go implementation. More info [here](#kmod-amneziawg-vs-amneziawg-go).
 
-**Q: Why are no compiled binaries available?**  
+**Q: Why should I still compile the packages myself?**  
 A: There are several reasons:  
-1. OpenWRT supports many architectures and targets (5-7 of which cover 80% of devices). Compiling binaries for all of them is impractical.  
+1. OpenWRT supports many architectures and targets, and only the most popular ones are prebuilt.  
 2. It takes just a few clicks and about 20 minutes to compile binaries with your parameters.  
-3. If you find compiling difficult, correctly setting up the protocol will be even harder.
+3. Kernel modules built for `SNAPSHOT` are only installable while the firmware `vermagic` matches.
 4. You can review all the sources and make sure there are no unexpected issues or vulnerabilities before building or deploying.
 
 **Q: How are versions named?**  
@@ -37,8 +37,10 @@ The main differences and objectives are:
    - Fixed a bug with QR code generation. The generated QR code now contains AmneziaWG-specific information.
    - Added checkboxes to enable/disable peers.
    - Added an icon for the interface.
-   - Added support for ranged H1-H4 parameters (delimiter: `-`, e.g., `123456-123500`).
+   - Added support for ranged H1-H4 parameters (delimiter: `-`, e.g., `123456-123500`), including a check that the four ranges do not overlap each other.
    - Added support for v2.0 protocol parameters: S3-S4, I1-I5.
+   - Added support for v3.0 protocol parameters, ranged `Persistent Keep Alive` and a generator for the header protection key.
+   - The AmneziaWG parameters are now described by a single table, so the settings tab, the configuration import and the configuration export can never drift apart.
 
 2. `amneziawg-tools` has been aligned with the upstream repository [amneziawg-tools](https://github.com/amnezia-vpn/amneziawg-tools/):
    - The package is now compiled based on the upstream repository.
@@ -48,15 +50,92 @@ The main differences and objectives are:
    - Fixed a bug with an incorrect path when using `amneziawg-go`.
    - Added support for ranged H1-H4 parameters (with `-` delimiter, e.g., `123456-123500`).
    - Added support for v2.0 protocol parameters: S3-S4, I1-I5.
+   - Added support for v3.0 protocol parameters and ranged `PersistentKeepalive`.
 
-3. `kmod-amneziawg` is now compiled entirely based on the upstream [amneziawg-linux-kernel-module](https://github.com/amnezia-vpn/amneziawg-linux-kernel-module) repository plus fixes from the community.
+3. `kmod-amneziawg` is now compiled entirely based on the upstream [amneziawg-linux-kernel-module](https://github.com/amnezia-vpn/amneziawg-linux-kernel-module) repository.
    - Added support for v2.0 protocol parameters: S3-S4, I1-I5.
+   - Added support for v3.0 protocol parameters.
 
 4. `amneziawg-go` acts as an alternative to `kmod-amneziawg`. Please refer to [this section](#kmod-amneziawg-vs-amneziawg-go) for more information. The Go implementation is fully based on the upstream project [amneziawg-go](https://github.com/amnezia-vpn/amneziawg-go).
+   - Added support for v3.0 protocol parameters.
+
+5. Packaging and build process:
+   - Prebuilt packages for the most popular architectures are published automatically, see [below](#download-prebuilt-amneziawg-packages).
+
+
+## Protocol parameters
+
+All AmneziaWG parameters are optional. A parameter that is left empty is treated as `0`, and an interface with every parameter left empty behaves exactly like plain WireGuard. Interface parameters live on the `AmneziaWG Settings` tab of the interface (UCI section `network.<interface>`), while `Persistent Keep Alive` is configured per peer.
+
+Some parameters are **server-side**: they describe the wire format and therefore must be identical on both ends of the tunnel. The others are **client-side**: they only influence the behaviour of the local instance and may differ between peers.
+
+Since v3.0 several parameters accept a **range** instead of a single number. A range is written as `low-high` (e.g. `25-30`), where `low` must not be greater than `high`, and makes AmneziaWG pick a fresh random value from these bounds for every use.
+
+### Parameters of AmneziaWG v1.5 and v2.0
+
+| UCI option | Configuration file key | Side | Description |
+| --- | --- | --- | --- |
+| `awg_jc` | `Jc` | client | Amount of junk packets sent before every handshake. The recommended range is 4-12. |
+| `awg_jmin` | `Jmin` | client | Minimum size of a junk packet, in bytes. Must not exceed `Jmax`. |
+| `awg_jmax` | `Jmax` | client | Maximum size of a junk packet, in bytes. Keep it below the MTU of your uplink, otherwise the junk packets get fragmented and look suspicious. |
+| `awg_s1` | `S1` | server | Junk header prepended to the handshake initiation packet, in bytes. |
+| `awg_s2` | `S2` | server | Junk header prepended to the handshake response packet, in bytes. |
+| `awg_s3` | `S3` | server | Junk header prepended to the cookie reply packet, in bytes. |
+| `awg_s4` | `S4` | server | Junk header prepended to transport packets, in bytes. |
+| `awg_h1` | `H1` | server | Packet type header of the handshake initiation packet. Default Wireguard value is `1`. |
+| `awg_h2` | `H2` | server | Packet type header of the handshake response packet. Default Wireguard value is `2`. |
+| `awg_h3` | `H3` | server | Packet type header of the cookie reply packet. Default Wireguard value is `3`. |
+| `awg_h4` | `H4` | server | Packet type header of the transport packet. Default Wireguard value is `4`. |
+| `awg_i1` … `awg_i5` | `I1` … `I5` | client | Signature packets sent before every handshake, in the order `I1`, `I2`, …, `I5`. An empty parameter simply skips its packet. |
+
+`H1`-`H4` are 32-bit values and accept ranges. The four ranges must not overlap each other, otherwise the interface cannot tell one packet type from another and refuses to start.
+
+The signature packets `I1`-`I5` are described by a sequence of tags that is expanded anew for every packet:
+
+| Tag | Description |
+| --- | --- |
+| `<b 0x[hex]>` | Writes the given bytes verbatim. The hex sequence is always of even length. |
+| `<r [size]>` | Writes `[size]` random bytes. |
+| `<rd [size]>` | Writes `[size]` random digits (`0-9`). |
+| `<rc [size]>` | Writes `[size]` random characters (`a-zA-Z`). |
+| `<c>` | Writes an incrementing counter. |
+| `<t>` | Writes the current time as a 4 byte UNIX timestamp. |
+
+A typical value therefore looks like `<b 0xc21f2749><r 16><t>`. As with junk packets, keep the resulting size below the MTU.
+
+### Parameters of AmneziaWG v3.0
+
+| UCI option | Configuration file key | Side | Description |
+| --- | --- | --- | --- |
+| `awg_header_protection_key` | `HeaderProtectionKey` | server | Base64-encoded 32 byte key that encrypts the low entropy header fields WireGuard uses for authentication. Generate it with the button next to the field or with `awg genkey`. |
+| `awg_content_padding_addition` | `ContentPaddingAddition` | server | Extra padding appended to transport packets, in bytes. Accepts a range. |
+| `awg_rekey_after_time` | `RekeyAfterTime` | client | Seconds after which a new handshake is started. Accepts a range. Default is `120`. |
+| `awg_rekey_timeout` | `RekeyTimeout` | client | Seconds after which an unanswered handshake is repeated. Accepts a range. Default is `5`. |
+| `awg_reject_after_time` | `RejectAfterTime` | client | Seconds after which a session key is discarded and incoming data is rejected. Accepts a range. Default is `180`. |
+| `awg_keepalive_timeout` | `KeepaliveTimeout` | client | Seconds of silence after which a keep alive message is sent. Accepts a range. Default is `10`. |
+| `awg_max_handshake_attempts` | `MaxHandshakeAttempts` | client | Number of handshake retries before the peer is given up on. Accepts a range. Default is `18`. |
+| `persistent_keepalive` (per peer) | `PersistentKeepalive` | client | Seconds between keep alive messages. Since v3.0 it also accepts a range, e.g. `25-30`. Default is `0`, which disables it. |
+
+How to use them:
+
+1. **Header protection** is the strongest addition of v3.0. It removes the last static fields that can be fingerprinted, at the cost of requiring `S1`-`S4` to be at least `12` (the nonce is taken from the crypto padding). Set the same `HeaderProtectionKey` on the server and on every client, and make sure `S1`-`S4` are set accordingly; otherwise the interface refuses to come up.
+2. **Content padding** hides the exact size of the encrypted payload. It is meant to be set on both sides, although it also works one-sided.
+3. **Timings** change how often a client rekeys, retries and sends keep alives. Because they only alter local behaviour, they are the safest parameters to experiment with: use ranges to avoid a regular, easily recognizable traffic pattern. Note that a `RejectAfterTime` shorter than `RekeyAfterTime` makes the tunnel stall.
+4. **Ranged `Persistent Keep Alive`** serves the same purpose for the keep alive interval of a single peer.
+
+### Backward compatibility
+
+AmneziaWG v3.0 is a superset of the previous versions, and both `kmod-amneziawg` and `amneziawg-go` keep supporting everything that came before:
+
+1. With all parameters left empty, an AmneziaWG v3.0 interface is indistinguishable from plain WireGuard and interoperates with WireGuard peers.
+2. With only the v1.5 and v2.0 parameters filled in, it behaves exactly like an AmneziaWG v1.5 or v2.0 interface and interoperates with peers running those versions. Existing configurations therefore keep working after the upgrade and require no changes.
+3. The client-side v3.0 parameters (the timings and the ranged `Persistent Keep Alive`) may be used against a v2.0 peer, since they never change the wire format.
+4. The server-side v3.0 parameters (`HeaderProtectionKey`, `ContentPaddingAddition`) do change the wire format, so both ends must run AmneziaWG v3.0. A v2.0 peer will silently drop the packets it cannot parse.
+5. Always upgrade `amneziawg-tools` together with `kmod-amneziawg` or `amneziawg-go`. The v3.0 tools only pass a parameter down to the implementation when it is actually configured, so an older kernel module keeps working as long as the v3.0 parameters are empty, but starts to fail with `Unable to modify interface` once they are set.
 
 ## `kmod-amneziawg` vs `amneziawg-go`
 
-When the AmneziaWG authors introduced the v1.5 protocol, it was supported only in the Go implementation. Thus the user namespace (Go) implementation was added to the repo in order to support the newer protocol version. Later, v2.0 protocol support was added to both the user namespace (Go) and kernel module implementations. To maintain backward compatibility, this repository will continue to support both packages.
+When the AmneziaWG authors introduced the v1.5 protocol, it was supported only in the Go implementation. Thus the user namespace (Go) implementation was added to the repo in order to support the newer protocol version. Later, v2.0 and v3.0 protocol support was added to both the user namespace (Go) and kernel module implementations. To maintain backward compatibility, this repository will continue to support both packages.
 
 Differences:
 1. `kmod-amneziawg`: requires a less powerful device to run, consumes less space and provides a faster throughput. Recommended option.
@@ -80,7 +159,7 @@ This repository is intended primarily for compiling packages during the firmware
 
 3. Update package feeds by running: `{path to openwrt dir}/scripts/feeds update -a`
 
-4. Shall you build the firmware with the `amneziawg-go` package, please make sure the included Go package version is higher than `1.24.4`. Most OpenWRT versions except `SNAPSHOT` have older Go versions. To upgrade:
+4. Shall you build the firmware with the `amneziawg-go` package, please make sure the included Go package version is `1.25.0` or higher. Most OpenWRT versions except `SNAPSHOT` have older Go versions. To upgrade:
    - Clone the latest OpenWRT Packages repository: `git clone https://github.com/openwrt/packages.git`.
    - Replace `{path to openwrt dir}/feeds/packages/lang/golang` with the one from the cloned repository at `{path to the cloned repository}/packages/lang/golang`.
 
@@ -93,6 +172,29 @@ This repository is intended primarily for compiling packages during the firmware
 8. Build the firmware: `make -C openwrt -j$(nproc) V=sc`
 
 9. After building, firmware will be located at: `{path to openwrt dir}/bin/targets/{your target}/{your subtarget}` and compiled packages at: `{path to openwrt dir}/bin/targets/{your target}/{your subtarget}/packages` (kernel module) and `{path to openwrt dir}/bin/packages/{your architecture}/awgopenwrt` (other packages).
+
+### Download Prebuilt AmneziaWG Packages
+
+The most popular architectures are built automatically and published on the [releases page](../../releases), so for most routers no compilation is needed at all.
+
+1. Obtain your router parameters:
+   - **OpenWRT version:** `SNAPSHOT` or a stable release (e.g., `24.10.2`), found under `Status -> Overview` on the `Firmware Version` line.
+   - **Target and Subtarget:** found under `Status -> Overview` on the `Target Platform` line (before and after the slash).
+
+2. Pick the archive matching your parameters:
+   - For a stable release, take it from the latest versioned release. It is built against the newest stable OpenWRT version.
+   - For `SNAPSHOT`, take it from the `snapshot` pre-release, which is rebuilt every day. Since `SNAPSHOT` firmware changes daily as well, the kernel module only installs while the `vermagic` recorded in `build-info.txt` matches your firmware (see [below](#vermagic-control-for-snapshot-versions)).
+
+3. Extract the archive and [install the packages](#how-to-install-amneziawg).
+
+Two workflows keep those artifacts up to date, and both of them can also be started by hand from a fork:
+
+1. `Release - Build AmneziaWG for the latest OpenWrt release` runs whenever a `vX.Y.Z` tag is pushed. It resolves the newest stable OpenWRT version on its own and collects the packages into a **draft** release, so that the changelog can be written before it goes public. Started by hand against an already published release, it only adds the new archives to it, which is how an unchanged YAAWG version is rebuilt for a freshly released OpenWRT version.
+2. `Snapshot - Build AmneziaWG for OpenWrt SNAPSHOT` runs daily and republishes the rolling `snapshot` pre-release.
+
+Every archive is named `amneziawg-{target}-{subtarget}-{architecture}-openwrt-{OpenWRT version}.tar.gz`, so builds of the same YAAWG version for several OpenWRT versions can live side by side in one release.
+
+The list of built architectures lives in [.github/targets.json](.github/targets.json); add an entry there to cover another target.
 
 ### Compile AmneziaWG Packages Without Building the Firmware
 
@@ -147,7 +249,7 @@ Steps:
 
 4. Select the workflow `Legacy - step 1. Build OpenWrt toolchain cache`, enter your router parameters, and start the run.
    - Optionally set a different YAAWG version using the release tag or commit hash field.
-   - Do **not** disable `Update Go` unless you understand the consequences; `amneziawg-go` requires Go version greater than 1.24.4.
+   - Do **not** disable `Update Go` unless you understand the consequences; `amneziawg-go` requires Go version 1.25.0 or higher.
 
 5. Wait approximately 2 to 2.5 hours for the cache build to complete.
 
