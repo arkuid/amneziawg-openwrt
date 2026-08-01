@@ -69,11 +69,6 @@ jobs:
     if: ${{ needs.prepare.outputs.publish == 'true' }}
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout YAAWG repository
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ needs.prepare.outputs.amneziawg_version }}
-
       - name: Download artifacts
         uses: actions/download-artifact@v8
         with:
@@ -95,17 +90,22 @@ jobs:
       - name: Publish snapshot pre-release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           BUILD_DATE: ${{ steps.pack.outputs.date }}
+          BUILT_FROM: ${{ needs.prepare.outputs.amneziawg_version }}
         run: |
           set -e
-          notes="Packages built against OpenWrt SNAPSHOT on ${BUILD_DATE} from \`${{ needs.prepare.outputs.amneziawg_version }}\`.
 
-          OpenWrt SNAPSHOT changes daily. The kernel module only installs on a firmware
-          whose kernel vermagic matches the one recorded in \`build-info.txt\` inside the
-          archive, so always grab the build of the same day as your firmware."
+          {
+            printf 'Packages built against OpenWrt SNAPSHOT on %s from `%s`.\n\n' \
+              "$BUILD_DATE" "$BUILT_FROM"
+            printf 'OpenWrt SNAPSHOT changes daily. The kernel module only installs on a firmware\n'
+            printf 'whose kernel vermagic matches the one recorded in `build-info.txt` inside the\n'
+            printf 'archive, so always grab the build of the same day as your firmware.\n'
+          } > notes.md
 
           gh release delete snapshot --cleanup-tag --yes || true
           gh release create snapshot dist/* \
             --prerelease \
             --title "OpenWrt SNAPSHOT builds (${BUILD_DATE})" \
-            --notes "$notes"
+            --notes-file notes.md
