@@ -132,7 +132,7 @@ jobs:
 
           # The kernel module can only be installed on a firmware whose kernel
           # reports the very same vermagic, which matters for SNAPSHOT builds.
-          vermagic="$(find openwrt/build_dir -maxdepth 4 -type f -name vermagic -print -quit)"
+          vermagic="$(find openwrt/build_dir -maxdepth 5 -type f -name '.vermagic' -print -quit)"
           {
             echo "YAAWG version: ${{ inputs.amneziawg_version }}"
             echo "OpenWrt version: ${{ inputs.openwrt_version }}"
